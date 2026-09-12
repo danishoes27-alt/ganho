@@ -222,6 +222,8 @@ let state = {
   adminBusca: '',
   adminCarregando: false,
   adminErro: '',
+  assinandoCarregando: false,
+  assinarErro: '',
   toast: null,
   form: { nome: '', telefone: '', codigoIndicacao: '', pin: '' },
   vendaForm: { cliente: '', valor: '', parcelas: 'avista', dataVenda: '', whatsapp: '', descricao: '', categoria: 'Venda' },
@@ -403,15 +405,16 @@ async function handleCriarConta() {
       return;
     }
 
-    if (referrer) {
-      await sbClient.rpc('aplicar_indicacao', { codigo_indicador: codigoIndicacao, novo_nome: nome });
-    }
+    // O bônus de indicação agora só é creditado quando a pessoa indicada
+    // efetua o primeiro pagamento de verdade (via admin_renovar_assinatura),
+    // não mais no momento do cadastro.
 
     state.user = novoUsuario;
     state.vendas = [];
     state.despesas = [];
     state.referrals = [];
     state.screen = 'app';
+    state.tab = 'vendas';
     state.loading = false;
     render();
   } catch (e) {
@@ -464,6 +467,7 @@ async function handleEntrar() {
     state.despesas = await loadDespesas(userId);
     state.referrals = await loadReferrals(userId);
     state.screen = 'app';
+    state.tab = 'vendas';
     state.loading = false;
     render();
   } catch (e) {
@@ -480,6 +484,8 @@ async function handleLogout() {
   state.despesas = [];
   state.referrals = [];
   state.vendaDetalheId = null;
+  state.adminUsuarios = [];
+  state.adminBusca = '';
   state.form = { nome: '', telefone: '', codigoIndicacao: '', pin: '' };
   state.screen = 'login';
   state.loginMode = 'entrar';
@@ -762,6 +768,8 @@ function AppScreen() {
   }
   wrap.appendChild(header);
 
+  if (state.tab === 'admin' && !state.user.is_admin) { state.tab = 'vendas'; }
+
   if (state.tab === 'admin') {
     const content = el('div', { class: 'content' });
     content.appendChild(AdminTab());
@@ -888,20 +896,27 @@ async function carregarPainelAdmin() {
   render();
 }
 
-async function renovarAssinatura(telefone) {
+async function renovarAssinatura(telefone, dias) {
   try {
-    const { error } = await sbClient.rpc('admin_renovar_assinatura', { telefone_alvo: telefone });
+    const { error } = await sbClient.rpc('admin_renovar_assinatura', { telefone_alvo: telefone, dias: dias });
     if (error) {
       showToast('Não deu pra renovar: ' + error.message);
       return;
     }
-    const pessoa = state.adminUsuarios.find(u => u.telefone === telefone);
-    if (pessoa) pessoa.plano_dias_bonus = (pessoa.plano_dias_bonus || 0) + 30;
-    showToast('Renovado! +30 dias adicionados.');
-    render();
+    // Recarrega a lista inteira, já que o bônus pode ter sido creditado
+    // pra OUTRA pessoa também (quem indicou), não só quem recebeu os dias
+    await carregarPainelAdmin();
+    showToast(`Adicionado! +${dias} dias pra essa pessoa.`);
   } catch (e) {
     showToast('Não deu pra renovar agora. Confere sua internet.');
   }
+}
+
+function corDoNivel(nivel) {
+  if (nivel === 'Diamante') return '#8FD3FF';
+  if (nivel === 'Ouro') return 'var(--gold)';
+  if (nivel === 'Prata') return '#B8C0D0';
+  return '#C98A5A'; // Bronze
 }
 
 function diasRestantesDe(usuario) {
@@ -950,15 +965,81 @@ function AdminTab() {
     card.appendChild(top);
     card.appendChild(el('div', { style: 'color:var(--ink-soft); font-size:13px; margin-top:2px;' }, u.telefone));
 
-    const renovarBtn = el('button', { class: 'cobrar-btn', style: 'margin-top:10px;' }, 'Renovar +30 dias');
-    renovarBtn.addEventListener('click', () => renovarAssinatura(u.telefone));
-    card.appendChild(renovarBtn);
+    const nivelRow = el('div', { style: 'display:flex; gap:6px; align-items:center; margin-top:6px;' });
+    nivelRow.appendChild(el('div', { style: `font-size:11px; font-weight:600; border:1px solid ${corDoNivel(u.nivel)}; color:${corDoNivel(u.nivel)}; border-radius:6px; padding:2px 8px;` }, u.nivel || 'Bronze'));
+    nivelRow.appendChild(el('div', { style: 'font-size:12px; color:var(--ink-soft);' }, `${u.indicacoes_pagas || 0} indicações pagas`));
+    card.appendChild(nivelRow);
+
+    const acaoRow = el('div', { style: 'display:flex; gap:8px; margin-top:12px;' });
+    const diasInput = el('input', { type: 'number', placeholder: 'Dias', style: 'width:80px; padding:9px 10px; border-radius:8px; border:1.5px solid var(--line); background:var(--paper-raised); color:var(--ink); font-size:14px;' });
+    const renovarBtn = el('button', { class: 'cobrar-btn', style: 'flex:1; margin:0;' }, 'Adicionar dias');
+    renovarBtn.addEventListener('click', () => {
+      const dias = parseInt(diasInput.value, 10);
+      if (!dias || dias === 0) { showToast('Digita um número de dias válido.'); return; }
+      renovarAssinatura(u.telefone, dias);
+    });
+    acaoRow.appendChild(diasInput);
+    acaoRow.appendChild(renovarBtn);
+    card.appendChild(acaoRow);
 
     box.appendChild(card);
   });
 
   return box;
 }
+
+function nivelDe(qtd) {
+  if (qtd >= 10) return 'Diamante';
+  if (qtd >= 5) return 'Ouro';
+  if (qtd >= 2) return 'Prata';
+  return 'Bronze';
+}
+
+function diasPorNivel(nivel) {
+  if (nivel === 'Diamante') return 30;
+  if (nivel === 'Ouro') return 25;
+  if (nivel === 'Prata') return 20;
+  return 15;
+}
+
+function proximoNivelInfo(qtd) {
+  if (qtd < 2) return { faltam: 2 - qtd, nivel: 'Prata' };
+  if (qtd < 5) return { faltam: 5 - qtd, nivel: 'Ouro' };
+  if (qtd < 10) return { faltam: 10 - qtd, nivel: 'Diamante' };
+  return null; // já no topo
+}
+
+const MP_PLAN_CHECKOUT_URL = 'https://www.mercadopago.com.br/subscriptions/checkout?preapproval_plan_id=fb14a710e33b4889920e169a01f952c1';
+
+function iniciarAssinatura() {
+  // Guarda o telefone de quem tá assinando, pra reconhecer quando a pessoa
+  // voltar do Mercado Pago (mesmo que a sessão do navegador seja reaberta)
+  localStorage.setItem('ganho_assinando_telefone', state.user.telefone);
+  window.location.href = MP_PLAN_CHECKOUT_URL;
+}
+
+async function vincularAssinaturaMP(preapprovalId, telefone) {
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/mp-criar-assinatura`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ telefone, preapproval_id: preapprovalId })
+    });
+    const data = await resp.json();
+    if (resp.ok && !data.error) {
+      showToast('Assinatura vinculada! O pagamento pode levar alguns instantes pra confirmar.');
+    } else {
+      showToast('Não deu pra vincular a assinatura: ' + (data.error || 'erro desconhecido'));
+    }
+  } catch (e) {
+    showToast('Não deu pra confirmar a assinatura agora. Fala com o suporte se persistir.');
+  }
+  localStorage.removeItem('ganho_assinando_telefone');
+  const url = new URL(window.location.href);
+  url.searchParams.delete('preapproval_id');
+  window.history.replaceState({}, '', url.toString());
+}
+
 
 function AssinaturaTab() {
   const box = el('div');
@@ -976,8 +1057,16 @@ function AssinaturaTab() {
 
   const info = el('div', { class: 'venda-card', style: 'margin-top:16px;' });
   info.appendChild(el('div', { style: 'font-weight:600; margin-bottom:6px;' }, 'Plano único · R$ 19,90/mês'));
-  info.appendChild(el('div', { style: 'color:var(--ink-soft); font-size:13.5px; line-height:1.5;' }, 'Vendas, parcelas e cobranças ilimitadas. Indique amigos na aba "Indique e Ganhe" e ganhe 30 dias grátis a cada indicação que assinar.'));
+  const qtd = state.user.indicacoes_pagas || 0;
+  const nivel = nivelDe(qtd);
+  const diasIndic = diasPorNivel(nivel);
+  info.appendChild(el('div', { style: 'color:var(--ink-soft); font-size:13.5px; line-height:1.5;' },
+    `Vendas, parcelas e cobranças ilimitadas. Indique amigos na aba "Indique e Ganhe" — seu nível atual é ${nivel}, você ganha ${diasIndic} dias por indicação que assinar de verdade.`));
   box.appendChild(info);
+
+  const assinarBtn = el('button', { class: 'btn', style: 'margin-top:16px;' }, 'Assinar agora');
+  assinarBtn.addEventListener('click', iniciarAssinatura);
+  box.appendChild(assinarBtn);
 
   return box;
 }
@@ -1288,18 +1377,36 @@ function FinanceiroTab() {
 
 function IndiqueTab() {
   const box = el('div');
+  const qtd = state.user.indicacoes_pagas || 0;
+  const nivel = nivelDe(qtd);
+  const diasIndic = diasPorNivel(nivel);
+  const prox = proximoNivelInfo(qtd);
+
   const hero = el('div', { class: 'ref-hero' });
   hero.appendChild(el('h2', {}, 'Indique e Ganhe'));
-  hero.appendChild(el('p', {}, 'Compartilha seu código. Quando alguém criar conta usando ele, você ganha 30 dias grátis no seu plano.'));
+  hero.appendChild(el('p', {}, `Compartilha seu código. Quando a pessoa criar conta e assinar de verdade (pagar o primeiro mês), você ganha dias grátis — o quanto depende do seu nível.`));
   hero.appendChild(el('div', { class: 'code-box' }, state.user.code));
   const shareBtn = el('button', { class: 'share-btn' }, 'Compartilhar código');
   shareBtn.addEventListener('click', shareCode);
   hero.appendChild(shareBtn);
   box.appendChild(hero);
 
-  box.appendChild(el('h3', { style: 'font-size:15px; margin-bottom:10px;' }, `Suas indicações (${state.referrals.length})`));
+  const nivelCard = el('div', { class: 'venda-card' });
+  const nivelTop = el('div', { style: 'display:flex; justify-content:space-between; align-items:center;' });
+  nivelTop.appendChild(el('div', { style: `font-weight:700; font-size:16px; color:${corDoNivel(nivel)};` }, '🏅 ' + nivel));
+  nivelTop.appendChild(el('div', { style: 'font-size:13px; color:var(--ink-soft);' }, `${diasIndic} dias por indicação`));
+  nivelCard.appendChild(nivelTop);
+  nivelCard.appendChild(el('div', { style: 'font-size:12.5px; color:var(--ink-soft); margin-top:6px;' }, `${qtd} indicações pagas até agora`));
+  if (prox) {
+    nivelCard.appendChild(el('div', { style: 'font-size:12.5px; color:var(--ink-soft); margin-top:4px;' }, `Faltam ${prox.faltam} pra chegar no nível ${prox.nivel}`));
+  } else {
+    nivelCard.appendChild(el('div', { style: 'font-size:12.5px; color:var(--gold); margin-top:4px;' }, 'Você já está no nível máximo! 🎉'));
+  }
+  box.appendChild(nivelCard);
+
+  box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, `Suas indicações pagas (${state.referrals.length})`));
   if (state.referrals.length === 0) {
-    box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Ninguém usou seu código ainda.'));
+    box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Ninguém assinou usando seu código ainda.'));
   } else {
     state.referrals.forEach(r => {
       const row = el('div', { class: 'ref-list-item' });
@@ -1559,6 +1666,34 @@ if ('serviceWorker' in navigator) {
 }
 
 (async function init() {
+  try {
+    const { data: { session } } = await sbClient.auth.getSession();
+    if (session && session.user) {
+      const { data: perfil, error: perfilError } = await sbClient.from('usuarios').select('*').eq('user_id', session.user.id).single();
+      if (!perfilError && perfil) {
+        state.user = perfil;
+        state.vendas = await loadVendas(session.user.id);
+        state.despesas = await loadDespesas(session.user.id);
+        state.referrals = await loadReferrals(session.user.id);
+        state.screen = 'app';
+        state.tab = 'vendas';
+
+        // Se a pessoa acabou de voltar do checkout do Mercado Pago, vincula
+        // a assinatura automaticamente
+        const params = new URLSearchParams(window.location.search);
+        const preapprovalId = params.get('preapproval_id');
+        const telefonePendente = localStorage.getItem('ganho_assinando_telefone');
+        if (preapprovalId && telefonePendente) {
+          vincularAssinaturaMP(preapprovalId, telefonePendente);
+        }
+
+        render();
+        return;
+      }
+    }
+  } catch (e) {
+    // se der qualquer erro checando a sessão, cai pro fluxo normal de login
+  }
   render();
 })();
 </script>
