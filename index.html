@@ -1065,7 +1065,16 @@ function AssinaturaTab() {
   box.appendChild(info);
 
   const assinarBtn = el('button', { class: 'btn', style: 'margin-top:16px;' }, 'Assinar agora');
-  assinarBtn.addEventListener('click', iniciarAssinatura);
+  assinarBtn.addEventListener('click', () => {
+    assinarBtn.setAttribute('disabled', 'true');
+    assinarBtn.textContent = 'Abrindo o Mercado Pago...';
+    iniciarAssinatura();
+  });
+
+  if (state.user.mp_preapproval_id) {
+    box.appendChild(el('div', { style: 'background:var(--gold-soft); color:var(--gold); font-size:12.5px; padding:10px 12px; border-radius:8px; margin-top:16px;' },
+      'Você já iniciou uma assinatura antes. Se já pagou e os dias não apareceram em alguns minutos, ou se quer mudar a forma de pagamento, chama o suporte antes de assinar de novo — assinar mais de uma vez gera cobranças duplicadas.'));
+  }
   box.appendChild(assinarBtn);
 
   return box;
