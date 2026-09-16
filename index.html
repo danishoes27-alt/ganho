@@ -235,7 +235,23 @@ let state = {
 };
 
 function render() {
+  const ativo = document.activeElement;
+  const manterFoco = ativo && ativo.dataset && ativo.dataset.focusId
+    ? { id: ativo.dataset.focusId, inicio: ativo.selectionStart, fim: ativo.selectionEnd }
+    : null;
+
   App();
+
+  if (manterFoco) {
+    const el = document.querySelector(`[data-focus-id="${manterFoco.id}"]`);
+    if (el) {
+      el.focus();
+      if (el.setSelectionRange) {
+        try { el.setSelectionRange(manterFoco.inicio, manterFoco.fim); } catch (e) {}
+      }
+    }
+  }
+
   document.body.onclick = () => {
     let changed = false;
     if (state.showMenu) { state.showMenu = false; changed = true; }
@@ -932,7 +948,7 @@ function AdminTab() {
   box.appendChild(el('h2', { style: 'font-size:19px; margin-bottom:4px;' }, 'Painel Admin'));
   box.appendChild(el('p', { style: 'color:var(--ink-soft); font-size:13.5px; margin-bottom:16px;' }, 'Renovações de assinatura — visível só pra você.'));
 
-  const buscaInput = el('input', { type: 'text', placeholder: 'Buscar por nome ou telefone', value: state.adminBusca, style: 'margin-bottom:16px;' });
+  const buscaInput = el('input', { type: 'text', placeholder: 'Buscar por nome ou telefone', value: state.adminBusca, style: 'margin-bottom:16px;', 'data-focus-id': 'admin-busca' });
   buscaInput.addEventListener('input', e => { state.adminBusca = e.target.value; render(); });
   box.appendChild(buscaInput);
 
