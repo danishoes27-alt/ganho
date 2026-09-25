@@ -592,7 +592,7 @@ async function togglePagamento(vendaId, numero) {
 
 function shareCode() {
   const code = state.user.code;
-  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Usa meu código ${code} pra ganhar vantagem no cadastro: `;
+  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Usa meu código ${code} pra ganhar vantagem no cadastro: https://ganhoapp.vercel.app`;
   if (navigator.share) {
     navigator.share({ text }).catch(() => {});
   } else if (navigator.clipboard) {
