@@ -169,6 +169,15 @@
     padding: 15px; border-radius: 12px; font-size: 15px; font-weight: 600; font-family: 'Inter', sans-serif;
     box-shadow: 0 8px 24px rgba(31,78,55,0.35); cursor: pointer;
   }
+  .fab-row {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    width: min(440px, calc(100% - 40px)); display: flex; gap: 10px;
+  }
+  .fab-row .fab-half {
+    flex: 1; color: white; border: none; padding: 15px; border-radius: 12px;
+    font-size: 14px; font-weight: 600; font-family: 'Inter', sans-serif;
+    box-shadow: 0 8px 24px rgba(31,78,55,0.25); cursor: pointer;
+  }
 
   /* ---------- Modal ---------- */
   .overlay { position: fixed; inset: 0; background: rgba(31,42,35,0.5); display: flex; align-items: flex-end; z-index: 10; }
@@ -209,6 +218,7 @@ let state = {
   tab: 'vendas',
   vendas: [],
   despesas: [],
+  entradas: [],
   referrals: [],
   showNovaVenda: false,
   showNovaDespesa: false,
@@ -229,6 +239,9 @@ let state = {
   vendaForm: { cliente: '', valor: '', parcelas: 'avista', dataVenda: '', whatsapp: '', descricao: '', categoria: 'Venda' },
   vendaFiltro: 'todos',
   despesaForm: { descricao: '', valor: '' },
+  entradaForm: { descricao: '', valor: '' },
+  showNovaEntrada: false,
+  entradaErr: '',
   vendaErr: '',
   despesaErr: '',
   err: ''
@@ -347,6 +360,22 @@ async function deleteDespesaDB(despesaId) {
   if (error) { console.error(error); showToast('Não deu pra excluir. Confere sua internet.'); }
 }
 
+async function loadEntradas(userId) {
+  const { data, error } = await sbClient.from('entradas').select('*').eq('user_id', userId).order('criado_em', { ascending: false });
+  if (error) { console.error(error); return []; }
+  return data.map(d => ({ id: d.id, descricao: d.descricao, valor: Number(d.valor), criado_em: d.criado_em }));
+}
+
+async function insertEntrada(entrada) {
+  const { error } = await sbClient.from('entradas').insert({ ...entrada, user_id: state.user.user_id });
+  if (error) { console.error(error); showToast('Não deu pra salvar a entrada. Confere sua internet.'); }
+}
+
+async function deleteEntradaDB(entradaId) {
+  const { error } = await sbClient.from('entradas').delete().eq('id', entradaId);
+  if (error) { console.error(error); showToast('Não deu pra excluir. Confere sua internet.'); }
+}
+
 async function loadReferrals(userId) {
   const { data, error } = await sbClient.from('referrals').select('*').eq('referrer_user_id', userId).order('data', { ascending: false });
   if (error) { console.error(error); return []; }
@@ -428,6 +457,7 @@ async function handleCriarConta() {
     state.user = novoUsuario;
     state.vendas = [];
     state.despesas = [];
+    state.entradas = [];
     state.referrals = [];
     state.screen = 'app';
     state.tab = 'vendas';
@@ -481,6 +511,7 @@ async function handleEntrar() {
     state.user = perfil;
     state.vendas = await loadVendas(userId);
     state.despesas = await loadDespesas(userId);
+    state.entradas = await loadEntradas(userId);
     state.referrals = await loadReferrals(userId);
     state.screen = 'app';
     state.tab = 'vendas';
@@ -498,6 +529,7 @@ async function handleLogout() {
   state.user = null;
   state.vendas = [];
   state.despesas = [];
+  state.entradas = [];
   state.referrals = [];
   state.vendaDetalheId = null;
   state.adminUsuarios = [];
@@ -581,6 +613,32 @@ async function removeDespesa(id) {
   render();
 }
 
+async function handleNovaEntrada() {
+  state.entradaErr = '';
+  const descricao = state.entradaForm.descricao.trim();
+  const valor = parseFloat(state.entradaForm.valor.replace(',', '.'));
+
+  if (!descricao) { state.entradaErr = 'Preenche a descrição da entrada.'; render(); return; }
+  if (!valor || valor <= 0) { state.entradaErr = 'Preenche um valor válido, ex: 50,00.'; render(); return; }
+
+  const entrada = {
+    id: 'e_' + Date.now(),
+    descricao, valor,
+    criado_em: new Date().toISOString()
+  };
+  state.entradas.unshift(entrada);
+  await insertEntrada(entrada);
+  state.entradaForm = { descricao: '', valor: '' };
+  state.showNovaEntrada = false;
+  render();
+}
+
+async function removeEntrada(id) {
+  state.entradas = state.entradas.filter(d => d.id !== id);
+  await deleteEntradaDB(id);
+  render();
+}
+
 async function togglePagamento(vendaId, numero) {
   const venda = state.vendas.find(v => v.id === vendaId);
   if (!venda) return;
@@ -592,7 +650,7 @@ async function togglePagamento(vendaId, numero) {
 
 function shareCode() {
   const code = state.user.code;
-  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Usa meu código ${code} pra ganhar vantagem no cadastro: https://ganhoapp.vercel.app`;
+  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Usa meu código ${code} pra ganhar vantagem no cadastro: `;
   if (navigator.share) {
     navigator.share({ text }).catch(() => {});
   } else if (navigator.clipboard) {
@@ -826,13 +884,19 @@ function AppScreen() {
     fab.addEventListener('click', () => { state.showNovaVenda = true; render(); });
     wrap.appendChild(fab);
   } else if (state.tab === 'financeiro') {
-    const fab = el('button', { class: 'fab' }, '+ Novo gasto');
-    fab.addEventListener('click', () => { state.showNovaDespesa = true; render(); });
-    wrap.appendChild(fab);
+    const fabRow = el('div', { class: 'fab-row' });
+    const fabEntrada = el('button', { class: 'fab-half', style: 'background:var(--gold);' }, '+ Nova entrada');
+    fabEntrada.addEventListener('click', () => { state.showNovaEntrada = true; render(); });
+    const fabGasto = el('button', { class: 'fab-half', style: 'background:var(--red);' }, '+ Novo gasto');
+    fabGasto.addEventListener('click', () => { state.showNovaDespesa = true; render(); });
+    fabRow.appendChild(fabEntrada);
+    fabRow.appendChild(fabGasto);
+    wrap.appendChild(fabRow);
   }
 
   if (state.showNovaVenda) wrap.appendChild(NovaVendaModal());
   if (state.showNovaDespesa) wrap.appendChild(NovaDespesaModal());
+  if (state.showNovaEntrada) wrap.appendChild(NovaEntradaModal());
   if (state.toast) wrap.appendChild(el('div', { class: 'toast' }, state.toast));
 
   return wrap;
@@ -1297,10 +1361,12 @@ function VendaDetalhe() {
 function FinanceiroTab() {
   const box = el('div');
 
-  let totalRecebido = 0;
-  state.vendas.forEach(v => v.parcelas.forEach(p => { if (parcelaStatusReal(p) === 'pago') totalRecebido += p.valor; }));
+  let totalRecebidoVendas = 0;
+  state.vendas.forEach(v => v.parcelas.forEach(p => { if (parcelaStatusReal(p) === 'pago') totalRecebidoVendas += p.valor; }));
+  const totalEntradasExtras = state.entradas.reduce((s, d) => s + d.valor, 0);
+  const totalEntradas = totalRecebidoVendas + totalEntradasExtras;
   const totalDespesas = state.despesas.reduce((s, d) => s + d.valor, 0);
-  const saldo = totalRecebido - totalDespesas;
+  const saldo = totalEntradas - totalDespesas;
 
   const saldoCard = el('div', { class: 'plan-card', style: saldo < 0 ? 'background:var(--red);' : '' });
   saldoCard.appendChild(el('div', { class: 'label' }, 'Saldo (recebido − gastos)'));
@@ -1309,13 +1375,15 @@ function FinanceiroTab() {
 
   const summary = el('div', { class: 'summary-row', style: 'margin-top:14px;' });
   const b1 = el('div', { class: 'summary-box' });
-  b1.appendChild(el('div', { class: 'n mono' }, fmtMoney(totalRecebido)));
-  b1.appendChild(el('div', { class: 'l' }, 'Entradas (recebido)'));
+  b1.appendChild(el('div', { class: 'n mono' }, fmtMoney(totalEntradas)));
+  b1.appendChild(el('div', { class: 'l' }, 'Entradas (total)'));
   const b2 = el('div', { class: 'summary-box' });
   b2.appendChild(el('div', { class: 'n mono', style: 'color:var(--red)' }, fmtMoney(totalDespesas)));
   b2.appendChild(el('div', { class: 'l' }, 'Saídas (gastos)'));
   summary.appendChild(b1); summary.appendChild(b2);
   box.appendChild(summary);
+  box.appendChild(el('div', { style: 'font-size:12px; color:var(--ink-soft); margin-top:6px;' },
+    `Das entradas: ${fmtMoney(totalRecebidoVendas)} de vendas + ${fmtMoney(totalEntradasExtras)} lançadas na mão.`));
 
   // Resumo do mês atual (tipo DRE simplificado)
   const hoje = new Date();
@@ -1330,6 +1398,10 @@ function FinanceiroTab() {
         if (dp.getMonth() === mesAtual && dp.getFullYear() === anoAtual) recebidoMes += p.valor;
       }
     });
+  });
+  state.entradas.forEach(en => {
+    const de = new Date(en.criado_em);
+    if (de.getMonth() === mesAtual && de.getFullYear() === anoAtual) recebidoMes += en.valor;
   });
   state.despesas.forEach(d => {
     const dd = new Date(d.criado_em);
@@ -1347,7 +1419,7 @@ function FinanceiroTab() {
     return r;
   };
   dreCard.appendChild(dreRow('Vendido no mês', fmtMoney(vendidoMes)));
-  dreCard.appendChild(dreRow('Recebido no mês', fmtMoney(recebidoMes)));
+  dreCard.appendChild(dreRow('Recebido no mês (vendas + entradas)', fmtMoney(recebidoMes)));
   dreCard.appendChild(dreRow('Gastos no mês', '- ' + fmtMoney(despesasMes)));
   dreCard.appendChild(dreRow('Lucro do mês', fmtMoney(lucroMes), true));
   box.appendChild(dreCard);
@@ -1374,6 +1446,26 @@ function FinanceiroTab() {
     projRow.appendChild(pbox);
   });
   box.appendChild(projRow);
+
+  box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, 'Entradas lançadas'));
+  if (state.entradas.length === 0) {
+    box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Nenhuma entrada lançada ainda. Toca em "Nova entrada" pra registrar dinheiro que entrou fora das vendas.'));
+  } else {
+    state.entradas.forEach(en => {
+      const row = el('div', { class: 'venda-card' });
+      const top = el('div', { class: 'venda-top' });
+      top.appendChild(el('div', { class: 'venda-cliente' }, en.descricao));
+      top.appendChild(el('div', { class: 'venda-total mono', style: 'color:var(--green-deep)' }, '+ ' + fmtMoney(en.valor)));
+      row.appendChild(top);
+      const sub = el('div', { style: 'display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid var(--line); margin-top:8px;' });
+      sub.appendChild(el('div', { class: 'parcela-info' }, fmtDate(en.criado_em)));
+      const delBtn = el('button', { style: 'background:none; border:none; color:var(--ink-soft); font-size:12.5px; text-decoration:underline; cursor:pointer;' }, 'Remover');
+      delBtn.addEventListener('click', () => removeEntrada(en.id));
+      sub.appendChild(delBtn);
+      row.appendChild(sub);
+      box.appendChild(row);
+    });
+  }
 
   box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, 'Gastos lançados'));
 
@@ -1683,6 +1775,38 @@ function NovaDespesaModal() {
   return overlay;
 }
 
+function NovaEntradaModal() {
+  const overlay = el('div', { class: 'overlay' });
+  const modal = el('div', { class: 'modal row-rel' });
+  const closeBtn = el('button', { class: 'modal-close' }, '✕');
+  closeBtn.addEventListener('click', () => { state.showNovaEntrada = false; state.entradaErr = ''; render(); });
+  modal.appendChild(closeBtn);
+  modal.appendChild(el('h2', {}, 'Nova entrada'));
+  modal.appendChild(el('p', { style: 'color:var(--ink-soft); font-size:13.5px; margin:4px 0 4px;' }, 'Dinheiro que entrou fora das vendas do app — outro bico, aporte, etc.'));
+
+  const form = el('div');
+  form.appendChild(el('label', {}, 'Descrição'));
+  const inpDesc = el('input', { type: 'text', value: state.entradaForm.descricao, placeholder: 'Ex: Serviço avulso' });
+  inpDesc.addEventListener('input', e => state.entradaForm.descricao = e.target.value);
+  form.appendChild(inpDesc);
+
+  form.appendChild(el('label', {}, 'Valor (R$)'));
+  const inpValor = el('input', { type: 'text', inputmode: 'decimal', value: state.entradaForm.valor, placeholder: 'Ex: 150,00' });
+  inpValor.addEventListener('input', e => state.entradaForm.valor = e.target.value);
+  form.appendChild(inpValor);
+
+  if (state.entradaErr) form.appendChild(el('div', { class: 'err' }, state.entradaErr));
+
+  const submitBtn = el('button', { class: 'btn', type: 'button' }, 'Salvar entrada');
+  submitBtn.addEventListener('click', handleNovaEntrada);
+  form.appendChild(submitBtn);
+
+  modal.appendChild(form);
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', e => { if (e.target === overlay) { state.showNovaEntrada = false; state.entradaErr = ''; render(); } });
+  return overlay;
+}
+
 // ---------- Init ----------
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -1699,6 +1823,7 @@ if ('serviceWorker' in navigator) {
         state.user = perfil;
         state.vendas = await loadVendas(session.user.id);
         state.despesas = await loadDespesas(session.user.id);
+        state.entradas = await loadEntradas(session.user.id);
         state.referrals = await loadReferrals(session.user.id);
         state.screen = 'app';
         state.tab = 'vendas';
