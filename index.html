@@ -650,12 +650,13 @@ async function togglePagamento(vendaId, numero) {
 
 function shareCode() {
   const code = state.user.code;
-  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Usa meu código ${code} pra ganhar vantagem no cadastro: `;
+  const link = `https://ganhoapp.vercel.app/?ref=${encodeURIComponent(code)}`;
+  const text = `Uso esse app pra controlar minhas vendas e parcelas de um jeito automático. Cadastra pelo meu link que meu código já vem preenchido: ${link}`;
   if (navigator.share) {
     navigator.share({ text }).catch(() => {});
   } else if (navigator.clipboard) {
     navigator.clipboard.writeText(text);
-    showToast('Texto copiado! Cola no WhatsApp.');
+    showToast('Link copiado! Cola no WhatsApp.');
   }
 }
 
@@ -1844,6 +1845,16 @@ if ('serviceWorker' in navigator) {
   } catch (e) {
     // se der qualquer erro checando a sessão, cai pro fluxo normal de login
   }
+
+  // Se a pessoa chegou por um link de indicação (?ref=CODIGO), já abre a
+  // tela de "Criar conta" com o código preenchido sozinho.
+  const paramsRef = new URLSearchParams(window.location.search);
+  const refCode = paramsRef.get('ref');
+  if (refCode) {
+    state.loginMode = 'criar';
+    state.form.codigoIndicacao = refCode.toUpperCase();
+  }
+
   render();
 })();
 </script>
