@@ -219,7 +219,12 @@ let state = {
   vendas: [],
   despesas: [],
   entradas: [],
+  contasFixas: [],
   referrals: [],
+  financeiroSubTab: 'negocio', // negocio | pessoal
+  showNovaContaFixa: false,
+  contaFixaForm: { tipo: 'despesa', descricao: '', valor: '', diaVencimento: '', categoria: 'assinatura' },
+  contaFixaErr: '',
   showNovaVenda: false,
   showNovaDespesa: false,
   vendaDetalheId: null,
@@ -347,7 +352,7 @@ async function deleteVendaDB(vendaId) {
 async function loadDespesas(userId) {
   const { data, error } = await sbClient.from('despesas').select('*').eq('user_id', userId).order('criado_em', { ascending: false });
   if (error) { console.error(error); return []; }
-  return data.map(d => ({ id: d.id, descricao: d.descricao, valor: Number(d.valor), criado_em: d.criado_em }));
+  return data.map(d => ({ id: d.id, descricao: d.descricao, valor: Number(d.valor), criado_em: d.criado_em, conta_fixa_id: d.conta_fixa_id }));
 }
 
 async function insertDespesa(despesa) {
@@ -363,7 +368,7 @@ async function deleteDespesaDB(despesaId) {
 async function loadEntradas(userId) {
   const { data, error } = await sbClient.from('entradas').select('*').eq('user_id', userId).order('criado_em', { ascending: false });
   if (error) { console.error(error); return []; }
-  return data.map(d => ({ id: d.id, descricao: d.descricao, valor: Number(d.valor), criado_em: d.criado_em }));
+  return data.map(d => ({ id: d.id, descricao: d.descricao, valor: Number(d.valor), criado_em: d.criado_em, conta_fixa_id: d.conta_fixa_id }));
 }
 
 async function insertEntrada(entrada) {
@@ -374,6 +379,37 @@ async function insertEntrada(entrada) {
 async function deleteEntradaDB(entradaId) {
   const { error } = await sbClient.from('entradas').delete().eq('id', entradaId);
   if (error) { console.error(error); showToast('Não deu pra excluir. Confere sua internet.'); }
+}
+
+async function loadContasFixas(userId) {
+  const { data, error } = await sbClient.from('contas_fixas').select('*').eq('user_id', userId).order('dia_vencimento', { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data.map(c => ({ id: c.id, tipo: c.tipo, descricao: c.descricao, valor: Number(c.valor), dia_vencimento: c.dia_vencimento, categoria: c.categoria, ativo: c.ativo, criado_em: c.criado_em }));
+}
+
+async function insertContaFixa(contaFixa) {
+  const { error } = await sbClient.from('contas_fixas').insert({ ...contaFixa, user_id: state.user.user_id });
+  if (error) { console.error(error); showToast('Não deu pra salvar a conta fixa. Confere sua internet.'); }
+}
+
+async function toggleContaFixaDB(id, ativo) {
+  const { error } = await sbClient.from('contas_fixas').update({ ativo }).eq('id', id);
+  if (error) { console.error(error); showToast('Não deu pra atualizar. Confere sua internet.'); }
+}
+
+async function deleteContaFixaDB(id) {
+  const { error } = await sbClient.from('contas_fixas').delete().eq('id', id);
+  if (error) { console.error(error); showToast('Não deu pra excluir. Confere sua internet.'); }
+}
+
+async function insertDespesaComOrigem(despesa) {
+  const { error } = await sbClient.from('despesas').insert({ ...despesa, user_id: state.user.user_id });
+  if (error) { console.error(error); showToast('Não deu pra lançar o pagamento. Confere sua internet.'); }
+}
+
+async function insertEntradaComOrigem(entrada) {
+  const { error } = await sbClient.from('entradas').insert({ ...entrada, user_id: state.user.user_id });
+  if (error) { console.error(error); showToast('Não deu pra lançar o recebimento. Confere sua internet.'); }
 }
 
 async function loadReferrals(userId) {
@@ -458,6 +494,7 @@ async function handleCriarConta() {
     state.vendas = [];
     state.despesas = [];
     state.entradas = [];
+    state.contasFixas = [];
     state.referrals = [];
     state.screen = 'app';
     state.tab = 'vendas';
@@ -512,6 +549,7 @@ async function handleEntrar() {
     state.vendas = await loadVendas(userId);
     state.despesas = await loadDespesas(userId);
     state.entradas = await loadEntradas(userId);
+    state.contasFixas = await loadContasFixas(userId);
     state.referrals = await loadReferrals(userId);
     state.screen = 'app';
     state.tab = 'vendas';
@@ -530,6 +568,7 @@ async function handleLogout() {
   state.vendas = [];
   state.despesas = [];
   state.entradas = [];
+  state.contasFixas = [];
   state.referrals = [];
   state.vendaDetalheId = null;
   state.adminUsuarios = [];
@@ -636,6 +675,76 @@ async function handleNovaEntrada() {
 async function removeEntrada(id) {
   state.entradas = state.entradas.filter(d => d.id !== id);
   await deleteEntradaDB(id);
+  render();
+}
+
+function contaFixaPagaNesteMes(contaFixa) {
+  const hoje = new Date();
+  const lista = contaFixa.tipo === 'despesa' ? state.despesas : state.entradas;
+  return lista.some(l => l.conta_fixa_id === contaFixa.id && (() => {
+    const d = new Date(l.criado_em);
+    return d.getMonth() === hoje.getMonth() && d.getFullYear() === hoje.getFullYear();
+  })());
+}
+
+function diasParaVencerContaFixa(contaFixa) {
+  const hoje = new Date();
+  let venc = new Date(hoje.getFullYear(), hoje.getMonth(), contaFixa.dia_vencimento);
+  const diffDias = Math.round((venc - new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())) / 86400000);
+  return diffDias;
+}
+
+async function handleNovaContaFixa() {
+  state.contaFixaErr = '';
+  const descricao = state.contaFixaForm.descricao.trim();
+  const valor = parseFloat(state.contaFixaForm.valor.replace(',', '.'));
+  const dia = parseInt(state.contaFixaForm.diaVencimento, 10);
+
+  if (!descricao) { state.contaFixaErr = 'Preenche a descrição.'; render(); return; }
+  if (!valor || valor <= 0) { state.contaFixaErr = 'Preenche um valor válido, ex: 50,00.'; render(); return; }
+  if (!dia || dia < 1 || dia > 31) { state.contaFixaErr = 'Preenche o dia do vencimento (1 a 31).'; render(); return; }
+
+  const contaFixa = {
+    id: 'cf_' + Date.now(),
+    tipo: state.contaFixaForm.tipo,
+    descricao, valor,
+    dia_vencimento: dia,
+    categoria: state.contaFixaForm.categoria,
+    ativo: true,
+    criado_em: new Date().toISOString()
+  };
+  state.contasFixas.push(contaFixa);
+  await insertContaFixa(contaFixa);
+  state.contaFixaForm = { tipo: 'despesa', descricao: '', valor: '', diaVencimento: '', categoria: 'assinatura' };
+  state.showNovaContaFixa = false;
+  render();
+}
+
+async function marcarContaFixaPaga(contaFixa) {
+  if (contaFixa.tipo === 'despesa') {
+    const despesa = { id: 'd_' + Date.now(), descricao: contaFixa.descricao, valor: contaFixa.valor, criado_em: new Date().toISOString(), conta_fixa_id: contaFixa.id };
+    state.despesas.unshift(despesa);
+    await insertDespesaComOrigem(despesa);
+  } else {
+    const entrada = { id: 'e_' + Date.now(), descricao: contaFixa.descricao, valor: contaFixa.valor, criado_em: new Date().toISOString(), conta_fixa_id: contaFixa.id };
+    state.entradas.unshift(entrada);
+    await insertEntradaComOrigem(entrada);
+  }
+  showToast(contaFixa.tipo === 'despesa' ? 'Pagamento lançado!' : 'Recebimento lançado!');
+  render();
+}
+
+async function toggleContaFixa(id) {
+  const contaFixa = state.contasFixas.find(c => c.id === id);
+  if (!contaFixa) return;
+  contaFixa.ativo = !contaFixa.ativo;
+  await toggleContaFixaDB(id, contaFixa.ativo);
+  render();
+}
+
+async function removeContaFixa(id) {
+  state.contasFixas = state.contasFixas.filter(c => c.id !== id);
+  await deleteContaFixaDB(id);
   render();
 }
 
@@ -884,6 +993,10 @@ function AppScreen() {
     const fab = el('button', { class: 'fab' }, '+ Nova venda');
     fab.addEventListener('click', () => { state.showNovaVenda = true; render(); });
     wrap.appendChild(fab);
+  } else if (state.tab === 'financeiro' && state.financeiroSubTab === 'pessoal') {
+    const fab = el('button', { class: 'fab' }, '+ Nova conta fixa');
+    fab.addEventListener('click', () => { state.showNovaContaFixa = true; render(); });
+    wrap.appendChild(fab);
   } else if (state.tab === 'financeiro') {
     const fabRow = el('div', { class: 'fab-row' });
     const fabEntrada = el('button', { class: 'fab-half', style: 'background:var(--gold);' }, '+ Nova entrada');
@@ -898,6 +1011,7 @@ function AppScreen() {
   if (state.showNovaVenda) wrap.appendChild(NovaVendaModal());
   if (state.showNovaDespesa) wrap.appendChild(NovaDespesaModal());
   if (state.showNovaEntrada) wrap.appendChild(NovaEntradaModal());
+  if (state.showNovaContaFixa) wrap.appendChild(NovaContaFixaModal());
   if (state.toast) wrap.appendChild(el('div', { class: 'toast' }, state.toast));
 
   return wrap;
@@ -1364,14 +1478,64 @@ function VendaDetalhe() {
   return box;
 }
 
+function saldoPessoalDoMes() {
+  const hoje = new Date();
+  let recebidoFixo = 0, pagoFixo = 0;
+  state.entradas.forEach(en => {
+    if (!en.conta_fixa_id) return;
+    const d = new Date(en.criado_em);
+    if (d.getMonth() === hoje.getMonth() && d.getFullYear() === hoje.getFullYear()) recebidoFixo += en.valor;
+  });
+  state.despesas.forEach(d => {
+    if (!d.conta_fixa_id) return;
+    const dd = new Date(d.criado_em);
+    if (dd.getMonth() === hoje.getMonth() && dd.getFullYear() === hoje.getFullYear()) pagoFixo += d.valor;
+  });
+  return { recebidoFixo, pagoFixo, saldo: recebidoFixo - pagoFixo };
+}
+
 function FinanceiroTab() {
   const box = el('div');
 
+  const toggleRow = el('div', { class: 'tabs', style: 'margin:0 0 14px;' });
+  const tabNegocio = el('div', { class: 'tab' + (state.financeiroSubTab === 'negocio' ? ' active' : '') }, 'Negócio');
+  tabNegocio.addEventListener('click', () => { state.financeiroSubTab = 'negocio'; render(); });
+  const tabPessoal = el('div', { class: 'tab' + (state.financeiroSubTab === 'pessoal' ? ' active' : '') }, 'Pessoal');
+  tabPessoal.addEventListener('click', () => { state.financeiroSubTab = 'pessoal'; render(); });
+  toggleRow.appendChild(tabNegocio);
+  toggleRow.appendChild(tabPessoal);
+  box.appendChild(toggleRow);
+
+  // Resumo geral (negócio + pessoal juntos), sempre visível em cima
+  let totalRecebidoVendasGeral = 0;
+  state.vendas.forEach(v => v.parcelas.forEach(p => { if (parcelaStatusReal(p) === 'pago') totalRecebidoVendasGeral += p.valor; }));
+  const totalEntradasAvulsasGeral = state.entradas.filter(e => !e.conta_fixa_id).reduce((s, d) => s + d.valor, 0);
+  const totalDespesasAvulsasGeral = state.despesas.filter(d => !d.conta_fixa_id).reduce((s, d) => s + d.valor, 0);
+  const { recebidoFixo, pagoFixo } = saldoPessoalDoMes();
+  const saldoGeral = totalRecebidoVendasGeral + totalEntradasAvulsasGeral + recebidoFixo - totalDespesasAvulsasGeral - pagoFixo;
+
+  const saldoGeralCard = el('div', { class: 'plan-card', style: saldoGeral < 0 ? 'background:var(--red);' : '' });
+  saldoGeralCard.appendChild(el('div', { class: 'label' }, 'Saldo geral (negócio + pessoal, esse mês)'));
+  saldoGeralCard.appendChild(el('div', { class: 'days mono' }, fmtMoney(saldoGeral)));
+  box.appendChild(saldoGeralCard);
+
+  if (state.financeiroSubTab === 'pessoal') box.appendChild(FinanceiroPessoal());
+  else box.appendChild(FinanceiroNegocio());
+
+  return box;
+}
+
+function FinanceiroNegocio() {
+  const box = el('div');
+
+  const entradasNegocio = state.entradas.filter(e => !e.conta_fixa_id);
+  const despesasNegocio = state.despesas.filter(d => !d.conta_fixa_id);
+
   let totalRecebidoVendas = 0;
   state.vendas.forEach(v => v.parcelas.forEach(p => { if (parcelaStatusReal(p) === 'pago') totalRecebidoVendas += p.valor; }));
-  const totalEntradasExtras = state.entradas.reduce((s, d) => s + d.valor, 0);
+  const totalEntradasExtras = entradasNegocio.reduce((s, d) => s + d.valor, 0);
   const totalEntradas = totalRecebidoVendas + totalEntradasExtras;
-  const totalDespesas = state.despesas.reduce((s, d) => s + d.valor, 0);
+  const totalDespesas = despesasNegocio.reduce((s, d) => s + d.valor, 0);
   const saldo = totalEntradas - totalDespesas;
 
   const saldoCard = el('div', { class: 'plan-card', style: saldo < 0 ? 'background:var(--red);' : '' });
@@ -1405,11 +1569,11 @@ function FinanceiroTab() {
       }
     });
   });
-  state.entradas.forEach(en => {
+  entradasNegocio.forEach(en => {
     const de = new Date(en.criado_em);
     if (de.getMonth() === mesAtual && de.getFullYear() === anoAtual) recebidoMes += en.valor;
   });
-  state.despesas.forEach(d => {
+  despesasNegocio.forEach(d => {
     const dd = new Date(d.criado_em);
     if (dd.getMonth() === mesAtual && dd.getFullYear() === anoAtual) despesasMes += d.valor;
   });
@@ -1454,10 +1618,10 @@ function FinanceiroTab() {
   box.appendChild(projRow);
 
   box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, 'Entradas lançadas'));
-  if (state.entradas.length === 0) {
+  if (entradasNegocio.length === 0) {
     box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Nenhuma entrada lançada ainda. Toca em "Nova entrada" pra registrar dinheiro que entrou fora das vendas.'));
   } else {
-    state.entradas.forEach(en => {
+    entradasNegocio.forEach(en => {
       const row = el('div', { class: 'venda-card' });
       const top = el('div', { class: 'venda-top' });
       top.appendChild(el('div', { class: 'venda-cliente' }, en.descricao));
@@ -1475,12 +1639,12 @@ function FinanceiroTab() {
 
   box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, 'Gastos lançados'));
 
-  if (state.despesas.length === 0) {
+  if (despesasNegocio.length === 0) {
     box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Nenhum gasto lançado ainda. Toca em "Novo gasto" pra registrar aluguel, fornecedor, etc.'));
     return box;
   }
 
-  state.despesas.forEach(d => {
+  despesasNegocio.forEach(d => {
     const row = el('div', { class: 'venda-card' });
     const top = el('div', { class: 'venda-top' });
     top.appendChild(el('div', { class: 'venda-cliente' }, d.descricao));
@@ -1494,6 +1658,87 @@ function FinanceiroTab() {
     row.appendChild(sub);
     box.appendChild(row);
   });
+
+  return box;
+}
+
+function FinanceiroPessoal() {
+  const box = el('div');
+  const { recebidoFixo, pagoFixo, saldo } = saldoPessoalDoMes();
+
+  const summary = el('div', { class: 'summary-row' });
+  const b1 = el('div', { class: 'summary-box' });
+  b1.appendChild(el('div', { class: 'n mono' }, fmtMoney(recebidoFixo)));
+  b1.appendChild(el('div', { class: 'l' }, 'Recebido esse mês'));
+  const b2 = el('div', { class: 'summary-box' });
+  b2.appendChild(el('div', { class: 'n mono', style: 'color:var(--red)' }, fmtMoney(pagoFixo)));
+  b2.appendChild(el('div', { class: 'l' }, 'Pago esse mês'));
+  summary.appendChild(b1); summary.appendChild(b2);
+  box.appendChild(summary);
+  box.appendChild(el('div', { style: 'font-size:12px; color:var(--ink-soft); margin:6px 0 4px;' },
+    `Saldo pessoal do mês: ${fmtMoney(saldo)}`));
+
+  box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px;' }, 'Contas fixas'));
+
+  const ativas = state.contasFixas.filter(c => c.ativo);
+  const inativas = state.contasFixas.filter(c => !c.ativo);
+
+  if (ativas.length === 0) {
+    box.appendChild(el('div', { class: 'empty', style: 'padding:20px;' }, 'Nenhuma conta fixa cadastrada ainda. Toca em "+ Nova conta fixa" pra lançar Netflix, água, salário, etc — uma vez só, e ela continua aparecendo todo mês.'));
+  } else {
+    ativas.forEach(cf => {
+      const paga = contaFixaPagaNesteMes(cf);
+      const diasVenc = diasParaVencerContaFixa(cf);
+      const atrasada = !paga && diasVenc < 0;
+
+      const row = el('div', { class: 'venda-card', style: atrasada ? 'border-color:var(--red);' : '' });
+      const top = el('div', { class: 'venda-top' });
+      top.appendChild(el('div', { class: 'venda-cliente' }, cf.descricao));
+      top.appendChild(el('div', { class: 'venda-total mono', style: cf.tipo === 'despesa' ? 'color:var(--red)' : 'color:var(--green-deep)' }, (cf.tipo === 'despesa' ? '- ' : '+ ') + fmtMoney(cf.valor)));
+      row.appendChild(top);
+
+      let statusTxt;
+      if (paga) statusTxt = cf.tipo === 'despesa' ? 'Pago esse mês' : 'Recebido esse mês';
+      else if (diasVenc < 0) statusTxt = `Venceu há ${Math.abs(diasVenc)} dia(s) — dia ${cf.dia_vencimento}`;
+      else if (diasVenc === 0) statusTxt = `Vence hoje (dia ${cf.dia_vencimento})`;
+      else statusTxt = `Vence em ${diasVenc} dia(s) — dia ${cf.dia_vencimento}`;
+      row.appendChild(el('div', { class: 'parcela-info', style: 'margin-top:4px;' + (atrasada ? ' color:var(--red);' : '') }, statusTxt + ` · ${cf.categoria}`));
+
+      const sub = el('div', { style: 'display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid var(--line); margin-top:8px; gap:8px;' });
+      if (!paga) {
+        const payBtn = el('button', { class: 'btn', style: 'padding:8px 14px; font-size:13px; width:auto;' }, cf.tipo === 'despesa' ? 'Marquei como pago' : 'Marquei como recebido');
+        payBtn.addEventListener('click', () => marcarContaFixaPaga(cf));
+        sub.appendChild(payBtn);
+      } else {
+        sub.appendChild(el('div', {}));
+      }
+      const delBtn = el('button', { style: 'background:none; border:none; color:var(--ink-soft); font-size:12.5px; text-decoration:underline; cursor:pointer;' }, 'Desativar');
+      delBtn.addEventListener('click', () => toggleContaFixa(cf.id));
+      sub.appendChild(delBtn);
+      row.appendChild(sub);
+      box.appendChild(row);
+    });
+  }
+
+  if (inativas.length > 0) {
+    box.appendChild(el('h3', { style: 'font-size:15px; margin:18px 0 10px; color:var(--ink-soft);' }, 'Desativadas'));
+    inativas.forEach(cf => {
+      const row = el('div', { class: 'venda-card', style: 'opacity:0.6;' });
+      const top = el('div', { class: 'venda-top' });
+      top.appendChild(el('div', { class: 'venda-cliente' }, cf.descricao));
+      top.appendChild(el('div', { class: 'venda-total mono' }, fmtMoney(cf.valor)));
+      row.appendChild(top);
+      const sub = el('div', { style: 'display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid var(--line); margin-top:8px;' });
+      const reativarBtn = el('button', { style: 'background:none; border:none; color:var(--ink-soft); font-size:12.5px; text-decoration:underline; cursor:pointer;' }, 'Reativar');
+      reativarBtn.addEventListener('click', () => toggleContaFixa(cf.id));
+      const delBtn = el('button', { style: 'background:none; border:none; color:var(--red); font-size:12.5px; text-decoration:underline; cursor:pointer;' }, 'Excluir de vez');
+      delBtn.addEventListener('click', () => removeContaFixa(cf.id));
+      sub.appendChild(reativarBtn);
+      sub.appendChild(delBtn);
+      row.appendChild(sub);
+      box.appendChild(row);
+    });
+  }
 
   return box;
 }
@@ -1813,6 +2058,71 @@ function NovaEntradaModal() {
   return overlay;
 }
 
+function NovaContaFixaModal() {
+  const overlay = el('div', { class: 'overlay' });
+  const modal = el('div', { class: 'modal row-rel' });
+  const closeBtn = el('button', { class: 'modal-close' }, '✕');
+  closeBtn.addEventListener('click', () => { state.showNovaContaFixa = false; state.contaFixaErr = ''; render(); });
+  modal.appendChild(closeBtn);
+  modal.appendChild(el('h2', {}, 'Nova conta fixa'));
+  modal.appendChild(el('p', { style: 'color:var(--ink-soft); font-size:13.5px; margin:4px 0 4px;' }, 'Cadastra uma vez e ela continua aparecendo todo mês sozinha.'));
+
+  const form = el('div');
+
+  form.appendChild(el('label', {}, 'Tipo'));
+  const selTipo = el('select', {});
+  [['despesa', 'Despesa (sai dinheiro)'], ['entrada', 'Entrada (entra dinheiro)']].forEach(([val, label]) => {
+    const opt = el('option', { value: val }, label);
+    if (val === state.contaFixaForm.tipo) opt.setAttribute('selected', 'true');
+    selTipo.appendChild(opt);
+  });
+  selTipo.addEventListener('change', e => {
+    state.contaFixaForm.tipo = e.target.value;
+    state.contaFixaForm.categoria = e.target.value === 'despesa' ? 'assinatura' : 'salario';
+    render();
+  });
+  form.appendChild(selTipo);
+
+  form.appendChild(el('label', {}, 'Descrição'));
+  const inpDesc = el('input', { type: 'text', value: state.contaFixaForm.descricao, placeholder: state.contaFixaForm.tipo === 'despesa' ? 'Ex: Netflix' : 'Ex: Salário' });
+  inpDesc.addEventListener('input', e => state.contaFixaForm.descricao = e.target.value);
+  form.appendChild(inpDesc);
+
+  form.appendChild(el('label', {}, 'Valor (R$)'));
+  const inpValor = el('input', { type: 'text', inputmode: 'decimal', value: state.contaFixaForm.valor, placeholder: 'Ex: 39,90' });
+  inpValor.addEventListener('input', e => state.contaFixaForm.valor = e.target.value);
+  form.appendChild(inpValor);
+
+  form.appendChild(el('label', {}, 'Dia do vencimento (1 a 31)'));
+  const inpDia = el('input', { type: 'number', min: '1', max: '31', value: state.contaFixaForm.diaVencimento, placeholder: 'Ex: 10' });
+  inpDia.addEventListener('input', e => state.contaFixaForm.diaVencimento = e.target.value);
+  form.appendChild(inpDia);
+
+  form.appendChild(el('label', {}, 'Categoria'));
+  const selCat = el('select', {});
+  const categorias = state.contaFixaForm.tipo === 'despesa'
+    ? [['assinatura', 'Assinatura'], ['conta', 'Conta (água/luz/internet)'], ['outro', 'Outro']]
+    : [['salario', 'Salário'], ['outro', 'Outro']];
+  categorias.forEach(([val, label]) => {
+    const opt = el('option', { value: val }, label);
+    if (val === state.contaFixaForm.categoria) opt.setAttribute('selected', 'true');
+    selCat.appendChild(opt);
+  });
+  selCat.addEventListener('change', e => state.contaFixaForm.categoria = e.target.value);
+  form.appendChild(selCat);
+
+  if (state.contaFixaErr) form.appendChild(el('div', { class: 'err' }, state.contaFixaErr));
+
+  const submitBtn = el('button', { class: 'btn', type: 'button' }, 'Salvar conta fixa');
+  submitBtn.addEventListener('click', handleNovaContaFixa);
+  form.appendChild(submitBtn);
+
+  modal.appendChild(form);
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', e => { if (e.target === overlay) { state.showNovaContaFixa = false; state.contaFixaErr = ''; render(); } });
+  return overlay;
+}
+
 // ---------- Init ----------
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -1830,6 +2140,7 @@ if ('serviceWorker' in navigator) {
         state.vendas = await loadVendas(session.user.id);
         state.despesas = await loadDespesas(session.user.id);
         state.entradas = await loadEntradas(session.user.id);
+        state.contasFixas = await loadContasFixas(session.user.id);
         state.referrals = await loadReferrals(session.user.id);
         state.screen = 'app';
         state.tab = 'vendas';
